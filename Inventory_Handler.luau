@@ -10,6 +10,7 @@ local Inventory_Handler = {}
 	Disclaimer:
 		
 		This module requires many other modules, so the game provided in the link isn't a byproduct of ONLY this module.
+		The events module is here: https://github.com/zollvereinPR/inv/blob/main/Inventory_Events.luau.
 		
 	Short Description:
 	
