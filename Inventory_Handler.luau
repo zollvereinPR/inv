@@ -14,427 +14,364 @@ local Inventory_Handler = {}
 		
 	Short Description:
 	
-		An advanced inventory system that integrates both stackable and unstackable items, signal-based handler.
+		An advanced inventory system that integrates both stackable and unstackable items, bindable-based handler
 		
 --]]
 
+
 --// OOP //--
 
-local MetaInventory = {}
-local MetaItem = {}
-MetaInventory.__index = MetaInventory
-MetaItem.__index = MetaItem
+local MetaInventory = {} --// inv class
+local MetaItem = {} --// item class 
+MetaInventory.__index = MetaInventory --// if not found in self, check here
+MetaItem.__index = MetaItem --// if not found in self, check here
 
 --// Modules //--
 
-local Networker = require(game.ReplicatedStorage.Network.Networker)
-local Cooldown = require(game.ReplicatedStorage.Shared.Modules.Cooldown_System)
-local ITEMS_DATA = require(game.ServerStorage.Data.Items)
-local Storage = require(game.ServerStorage.Modules.Storage_Framework.Storage_Framework)
-local Events = require(script.Parent.Inventory_Events)
-local misc = require(game.ReplicatedStorage.Shared.Packages.Misc_Package)
-local cooldown_handler = require(game.ReplicatedStorage.Shared.Modules.Cooldown_System)
-local HB_Handler = require(script.Parent.Hotbar_Handler)
-local tool_system = require(game.ServerStorage.Modules.Tool_System.Tool_System)
-
---// Types //--
+local Networker = require(game.ReplicatedStorage.Network.Networker) --// remote event handler
+local ITEMS_DATA = require(game.ServerStorage.Data.Items) --// items config
+local Storage = require(game.ServerStorage.Modules.Storage_Framework.Storage_Framework) --// profilestore wrapper and data hadling
+local Events = require(script.Parent.Inventory_Events) --// remote events' names for this module
+local cooldown_handler = require(game.ReplicatedStorage.Shared.Modules.Cooldown_System) --// handles cooldowns through ID
+local HB_Handler = require(script.Parent.Hotbar_Handler) --// handles hotbar
+local tool_system = require(game.ServerStorage.Modules.Tool_System.Tool_System) --// automatic tool system (doesnt use roblox tools)
 
 export type Inventory = {
-
 	Player: number,
-	Items: {},
-	IDS: {},
+	Items: {[string]: serialized_Item},
+	IDS: {[string]: number},
 	bytes: number,
 	Events: Events.events,
+	Connections: {[string]: RBXScriptConnection},
 
-	--// Methods //--
-	CheckItem:   (self: Inventory, itemName: string) -> {},
-	GetID:       (self: Inventory, itemName: string) -> string,
-	NewItem:     (self: Inventory, itemName: string, amount: number?) -> serialized_Item,
-	GetItem:     (self: Inventory, itemName: string) -> serialized_Item,
+	CheckItem: (self: Inventory, itemName: string) -> {},
+	GetID: (self: Inventory, itemName: string, stackable: boolean?) -> string,
+	NewItem: (self: Inventory, itemName: string, amount: number?, loop: boolean?) -> serialized_Item | {[string]: serialized_Item},
+	GetItem: (self: Inventory, itemID: string) -> serialized_Item?,
 	DestroyItem: (self: Inventory, itemID: string) -> (),
-}
+} --// type for inventory
 
 export type serialized_Item = {
-
 	Player: number,
 	Name: string,
 	Amount: number,
 	Type: string,
-	Events: "pointer",
+	Events: "pointer", --// basically points to the events
 	ID: string,
-}
+} --// type for items
 
-----------------
---// System //--
-----------------
+function Inventory_Handler.BulkDestroy(tab: {}) --// destroys all values of a table (inventory)
+	if typeof(tab) ~= "table" then return end --// if not then return
 
-function Inventory_Handler.BulkDestroy(tab: {})
-	
-	if typeof(tab) == "table" then
-		
-		for key, val in pairs(tab) do
-			
-			if typeof(val) == "table" then
-				
-				val:Destroy()
-			end
+	for _, val in tab do
+		if typeof(val) == "table" then --// only if its a table
+			val:Destroy() --// destroys item
 		end
 	end
 end
 
-function Inventory_Handler.OnPlayerAdded(plr)
-	
-	task.wait(5)
+function Inventory_Handler.OnPlayerAdded(plr: Player) --// once plr is added, run this (automatically run by the LOADER module, but it is the same as doing game.players.onplayeradded())
 
-	local plrTable = Storage.PlayerData[plr.UserId]
-	local data = plrTable.Inventory
-	local newInv = Inventory_Handler.NewInventory(plr.UserId, data)
+	local plrTable = Storage.PlayerData[plr.UserId] --// gets the plr data
+	Inventory_Handler.NewInventory(plr.UserId, plrTable.Inventory)
 end
 
-function Inventory_Handler.NewInventory(plrID, data): Inventory
+function Inventory_Handler.OnPlayerRemoving(plr: Player) --// once plr is removed, run this (automatically run by the LOADER module, but it is the same as doing game.players.onplayerremoving() and game:bindtoclose)
 
-	data = data or nil
-	if data then
-		
-		if not data["Player"] then
-			
-			data = nil
-		end
-	end
-	
-	local plrTable = Storage.PlayerData[plrID]
-	
+	local inv = Inventory_Handler.GetInventory(plr.UserId)
+	inv:Cleanup() --// cleans up all connections to prevent memory leaks
+end
+
+function Inventory_Handler.NewInventory(plrID: number, data: Inventory?): Inventory
+	if data and not data.Player then
+		data = nil
+	end --// if the old data doesnt have "Player" then its a invalid data so nil
+
+	local plrTable = Storage.PlayerData[plrID] --// plr data
+
 	local self = data or {
 		Player = plrID,
 		Items = {},
 		IDS = {},
-		bytes = 0,
-		Events = Events.New(plrID)
 	} :: Inventory
-	
-	
-	self.Events = Events.New(plrID)
-	
-	plrTable.Inventory = self
-	
-	setmetatable(self, MetaInventory)
+
+	self.Events = Events.New(plrID) --// creates new inventory events, its basically a dictionary of events {[string]: string}
+	plrTable.Inventory = self --// reconciles inventory
+
+	setmetatable(self, MetaInventory) --// attaches class
 	self:SetupConnections()
-	
-	self:Clear()
+	self:Synchronize() --// synching with client, runs every time to make sure the clients know which items exist
 
-	task.spawn(function()
-		
-		while true do
-			task.wait(5)
-
-			local item = self:NewItem("health_potion", 1)
-		end
-	end)
-	
-	task.wait(3)
-	
-	--item:Decrement()
-	
-	warn(self, "SETUP INVENTORY!")
-	
 	return self
 end
 
-function Inventory_Handler.GetInventory(plrID): Inventory
-
-	local plrTable = Storage.PlayerData[plrID]
-	return plrTable.Inventory
+function Inventory_Handler.GetInventory(plrID: number): Inventory
+	return Storage.PlayerData[plrID].Inventory --// returns plr inventory
 end
 
-function Inventory_Handler.GetEvents(plrID): Events.events
-	
-	local inv = Inventory_Handler.GetInventory(plrID)
-	return inv.Events
+function Inventory_Handler.GetEvents(plrID: number): Events.events --// we get the dictionary of inventory events
+	return Inventory_Handler.GetInventory(plrID).Events
 end
 
--------------------------
---// Inventory Class //--
--------------------------
+--// INVENTORY CLASS //--
 
-function MetaInventory:Synchronize()
-	
-	for id, data in pairs(self.Items) do
-		
+function MetaInventory:Cleanup()
+
+	self:CleanupConnections()
+	for _, itemData in self.Items do
+		itemData:CleanupToolConnections()
+	end
+end
+
+function MetaInventory:Synchronize() --// synchs with client for GUI related purposes
+	for _, data in self.Items do
 		self.Events:Fire("new_item", data)
 	end
 end
 
-function MetaInventory:Clear()
-
-	for id, data in pairs(self.Items) do
-
+function MetaInventory:Clear() --// clears all items of the inventory
+	for id, data in self.Items do
 		self.Events:Fire("destroy_item", data)
-		
 		self.Items[id] = nil
 	end
 end
 
-function MetaInventory:CheckItem(itemName)
-
+function MetaInventory:CheckItem(itemName: string) --// check if it exists in the CONFIG
 	return ITEMS_DATA[itemName]
 end
 
-function MetaInventory:GetID(itemName, stackable)
-
-	if not stackable then
-		
-		if not self.IDS[itemName] then
-
-			self.IDS[itemName] = 0
-		else
-			self.IDS[itemName] += 1
-		end
-
-		return itemName..self.IDS[itemName]
-	else
+function MetaInventory:GetID(itemName: string, stackable: boolean?): string
+	if stackable then --// if its stackable, why need an ID? js return the default name
 		return itemName
 	end
-end
 
-function MetaInventory:NewItem(itemName, amount, loop): serialized_Item
-
-	amount = amount or 1
-	loop = loop or false
-
-	local self = self :: Inventory
-	local defData = self:CheckItem(itemName)
-	local tab = {}
-	
-	if defData then
-		local stackable = defData.Stackable
-		if not stackable then
-			
-			if not loop then
-				
-				for i = 1, amount do
-
-					local item = self:NewItem(itemName, 1, true)
-					tab[item.ID] = item
-				end
-				
-				return tab
-			end
-		end
-
-		local ID = self:GetID(itemName, stackable)
-		if not self.Items[ID] then
-			
-			local itemData = { 
-				Player = self.Player,
-				Name = itemName,
-				Amount = amount,
-				ID = ID,
-				Stackable = stackable,
-				Type = defData["Item_Type"]
-			}:: serialized_Item
-
-			self.Items[ID] = setmetatable(itemData, MetaItem)
-
-			print("successfully created new item!")
-			
-			warn(itemData)
-
-			self.Events:Fire("new_item", itemData)
-
-			return itemData
-		else
-			
-			if stackable then
-				
-				local itemData = self.Items[ID]
-				setmetatable(itemData, MetaItem)
-				itemData:Increment(amount)
-			end
-		end
+	if not self.IDS[itemName] then --// creates id, or updates it
+		self.IDS[itemName] = 0
 	else
-		warn("item is not available in game: ", itemName)
+		self.IDS[itemName] += 1
 	end
+	return itemName..self.IDS[itemName]
 end
 
-function MetaInventory:GetItem(itemName): serialized_Item
+function MetaInventory:NewItem(itemName: string, amount: number, loop: boolean) --// loop is if its an unstackable item
+	local self = self :: Inventory --// types check inventory
+	amount = amount or 1
 
-	local itemData = self.Items[itemName]
-	if not itemData then warn("item not found!") return end
+	local defData = self:CheckItem(itemName) --//if its not in a config then warn 
+	if not defData then
+		warn("item is not available in game: ", itemName)
+		return
+	end
+
+	local stackable = defData.Stackable
+	if not stackable and not loop then --// used to create multiple unstackable items
+		local items = {}
+		for i = 1, amount do
+			local item = self:NewItem(itemName, 1, true)
+			items[item.ID] = item
+		end
+		return items
+	end
+
+--// since loop is true, (if its unstackable), we can create the item now
+
+	local ID = self:GetID(itemName, stackable) --// gets id
+	local existing = self.Items[ID] --// checks if exist
+	if existing then
+		if stackable then existing:Increment(amount) end --/ if its stackable then increment it
+		return existing
+	end
+
+	--//otherwise js create it new
+
+	local itemData = {
+		Player = self.Player,
+		Name = itemName,
+		Amount = amount,
+		ID = ID,
+		Stackable = stackable,
+		Type = defData.Item_Type, --// type of item (tool, non-tool)
+	} :: serialized_Item
+
+	self.Items[ID] = setmetatable(itemData, MetaItem) --// atttaches item class
+	self.Events:Fire("new_item", itemData) --// creates a new item, remote for the client
 
 	return itemData
 end
 
-function MetaInventory:DestroyItem(itemID, amount)
+function MetaInventory:GetItem(itemID: string): serialized_Item --// gets item in the plr inventory
+	local item = self.Items[itemID]
+	if not item then
+		warn("item not found!")
+	end
+	return item
+end
 
+function MetaInventory:DestroyItem(itemID: string) --// destroys item in plr inventory
 	local item = self:GetItem(itemID)
-	amount = amount or 1
-	
-	if item then
-		
-		self.Events:Fire("destroy_item", item)
+	if not item then
+		warn("item doesn't exist")
+		return
+	end
 
-		self.Items[itemID] = nil
-		
-		print("successfully destroyed item!")
-		
+	item:CleanupToolConnections()
+
+	self.Events:Fire("destroy_item", item) --// for client GUI purposes
+	self.Items[itemID] = nil
+end
+
+function MetaInventory:HandleUse(item: serialized_Item, defData, args) --// defdata is config
+	local self = self :: Inventory --// type checks inventory
+
+	if not defData.IsTool then
+		item:Decrement(args.Amount) --// if its not a tool, it means its a consumable
+		return
+	end
+
+	local bp = tool_system.GetBackpack(self.Player) --// gets tool backpack, its basically a folder that owns these custom tools
+	if not bp then return end
+
+	if bp:GetTool(item.ID) then --// gets tool using item ID
+		if item.Tool:CheckIfEquipped() then
+			item.Tool:Unequip() --// automatically unequips all other tools to prevent conflicts (its in the method itself, not here)
+		else
+			item.Tool:Equip()
+		end
+
+		--// equips it if its unequipped and unequips it if its equipped
+		return
+	end
+
+	item.Tool = bp:NewTool(item.Name, item.ID) --// if it doesnt exist then we creatre a new tool
+	item:SetupToolConnection()
+end
+
+function MetaInventory:HandleAddHotbar(item: serialized_Item) --// hotbar helper
+	local self = self :: Inventory
+	local hbItem = HB_Handler.GetItem(self.Player, item.ID)
+
+	if hbItem then
+		hbItem:Destroy()
 	else
-		warn("item doesnt exist alread")
+		HB_Handler.NewItem(self.Player, item.Name, item.ID, item) --// creates a new hb item
 	end
 end
 
-function MetaInventory:SetupConnections()
-	
+function MetaInventory:SetupConnections() --//new conns for each inventory
 	local self = self :: Inventory
-	
 	local connections = {}
-	connections.manage_item_cl = Networker.OnEvent(self.Events.manage_item_from_client, {"RE"}, function(plr, args)
-		
-		
-		if not cooldown_handler.CheckCooldown("use_item", 1) then return end
-		
-		local item = self:GetItem(args.ID)
-		if not item then error() end
-		
-		local defdata = ITEMS_DATA[item.Name]
-		
-		if args.Type == "use" then
-			
-			if not defdata.IsTool then
-				
-				item:Decrement(args.Amount)
-			else
-				local bp = tool_system.GetBackpack(self.Player)
-				if not bp then return end
 
-				if bp:GetTool(item.ID) then
-					
-					if item.Tool:CheckIfEquipped() then
+	--[[
+		how the networker works:
+			Networker.OnEvent() --> gets all the events it should connect to based on the "towho" arguments which is a table that contains all types of remotes (events, functions, unreliable, etc)
+			they go by their alias {
+				[RE] = RemoteEvent
+				[RF] = RemoteFunction
+			},
+			the networker automatically detects which script is running it using RunService:IsClient() and connects to the designated events (.OnClientEvent and .OnServerEvent)
 
-						item.Tool:Unequip()
-					else
-						item.Tool:Equip()
-					end
-					
-					warn("CREATIGN TOOL")
-					
-				else
-					local tooldata = bp:NewTool(item.Name, item.ID)
-					item.Tool = tooldata
-					
-					item:SetupToolConnection()
-				end
-			end
+			Networker.Fire() --> fires all the events based on "towho" which is the same thing as before and the networker also detects
+			which script is running it using RunService:IsClient() and connects to the designated events (:FireClient, :FireServer, :FireAllClients())
+
+			every method has server authority and rate limits
+	--]]
+
+	connections.manage_item_cl = Networker.OnEvent(self.Events.manage_item_from_client, {"RE"}, function(plr, args) --// .onevent returns .OnServerEvent, therefore a connection, || manage_item includes "equip" and "unequip"
+		if not cooldown_handler.CheckCooldown("use_item_"..self.Player, 1) then return end --// checks cooldown, first arg = id, second arg = amount (if the cooldown exists already, it substracts time elapsed and deletes it)
+
+		local item = self:GetItem(args.ID) --// specific ID
+		if not item then return end --// if the item doesnt exist then return 
+
+		local defData = ITEMS_DATA[item.Name] --// CONFIG DESIGNATED for the specific item name
+
+		if args.Type == "use" then --// detects which type of packet this was
+			self:HandleUse(item, defData, args)
 		elseif args.Type == "destroy" then
-			
 			item:Destroy()
 		elseif args.Type == "add_hotbar" then
-			
-			local hotbar = HB_Handler.GetHotbar(self.Player)
-			if HB_Handler.GetItem(self.Player, args.ID) then
-				
-				local hbitem = HB_Handler.GetItem(self.Player, args.ID):Destroy()
-			else
-				HB_Handler.NewItem(self.Player, item.Name, item.ID, item)
-			end
+			self:HandleAddHotbar(item)
 		end
 	end)
-	
-	connections.get_item = Networker.OnEvent(self.Events.get_item_from_client, {"RF"}, function(plr, args)
-		
-		local ID = args.ID
-		if not ID then error() end
-		
-		local item = self:GetItem(ID)
-		if item then return item end
+
+	connections.get_item = Networker.OnEvent(self.Events.get_item_from_client, {"RF"}, function(plr, args) --// gets an item from the server through remote functions
+		if not args.ID then return end
+		return self:GetItem(args.ID)
 	end)
-	
+
+	self.Connections = connections --// attaches connections for cleanup
 	return connections
 end
 
---------------------
---// Item Class //--
---------------------
+function MetaInventory:CleanupConnections() --// cleanup connections
+	if self.Connections then
+		for _, conn in self.Connections do --//disconnect all connections
+			conn:Disconnect()
+		end
 
-function MetaItem:Increment(amount)
-	
-	amount = amount or 1
-	
-	self["Amount"] += amount
-	
-	local ev = Inventory_Handler.GetEvents(self.Player)
-	ev:Fire("update_item", self)
-	
-	return self["Amount"]
+		self.Connections = nil
+	end
 end
 
-function MetaItem:Decrement(amount)
+function MetaItem:Increment(amount: number) --// increments an item
 
 	amount = amount or 1
+	self.Amount += amount
 
-	self["Amount"] -= amount
+	Inventory_Handler.GetEvents(self.Player):Fire("update_item", self) --// updates item for client
+	return self.Amount
+end
 
-	local tool = self.Tool
-	if tool then
+function MetaItem:Decrement(amount: number?)
+	amount = amount or 1
+	self.Amount -= amount
 
-		task.spawn(function()
-			tool:PlaySequence("Activate")
-		end)
-		tool:PlayVFXSequence("Activate")
+	if self.Tool then
+		task.spawn(self.Tool.PlaySequence, self.Tool, "Activate") --// if its a tool we play the tool animation
 	end
 
-	
-	if self["Amount"] <= 0 then
-		
+	if self.Amount <= 0 then
 		return self:Destroy()
 	end
 
-	local ev = Inventory_Handler.GetEvents(self.Player)
-	ev:Fire("update_item", self)
-	
-	
-	return self["Amount"]
+	Inventory_Handler.GetEvents(self.Player):Fire("update_item", self)
+	return self.Amount
 end
 
-function MetaItem:GetDefaultData()
-	
-	local itemName = self.Name
-	return ITEMS_DATA[itemName]
+function MetaItem:GetDefaultData() --// also gets item config
+	return ITEMS_DATA[self.Name]
 end
 
-function MetaItem:Destroy()
-	
-	if self.Tool then
-		
+function MetaItem:Destroy() --// destroys an item
+	local self = self :: serialized_Item
+
+	if self.Stackable and self.Amount > 0 then
+		self.Amount = 0
+		Inventory_Handler.GetEvents(self.Player):Fire("update_item", self) --// updates it for client (theres a type that tells the client if its destroyed)
+	end
+
+	if self.Tool then --// destroyd tool if it exists
 		self.Tool:Destroy()
+		self.Tool = nil
 	end
-	
-	local inv = Inventory_Handler.GetInventory(self.Player)
-	if self.Stackable then
-		
-		if self.Amount > 0 then
-			
-			self:Decrement(self.Amount)
-		else
-			inv:DestroyItem(self.ID)
-		end
-	else
-		inv:DestroyItem(self.ID)
-	end
+
+	Inventory_Handler.GetInventory(self.Player):DestroyItem(self.ID) --// removes it from inventory
 end
 
-function MetaItem:SetupToolConnection()
-	
-	if self.Tool then
-		
-		self.Tool_Event = Networker.OnEvent(self.Player.."Tool_Activate", {"BE"}, function(args)
-			
-			local ID = args.Data.ID
-			if ID == self.ID then
-				
-				self:Decrement()
-			end
-		end)
+function MetaItem:SetupToolConnection() --// setups a bindable event connection where the server retrieves when a client activates a tool (its a bindable cuz its fired by a remote first then by the own tool system through a bindable(
+	if not self.Tool then return end
+
+	self.Tool_Event = Networker.OnEvent(self.Player.."Tool_Activate", {"BE"}, function(args)
+		if args.Data.ID == self.ID then
+			self:Decrement()
+		end
+	end)
+end
+
+function MetaItem:CleanupToolConnections() --// cleans up tool connections
+	if not self.Tool then return end
+
+	if self.Tool_Event then
+		self.Tool_Event:Disconnect()
 	end
 end
 
