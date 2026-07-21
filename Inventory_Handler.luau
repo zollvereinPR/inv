@@ -44,11 +44,18 @@ export type Inventory = {
 	Events: Events.events,
 	Connections: {[string]: RBXScriptConnection},
 
-	CheckItem: (self: Inventory, itemName: string) -> {},
-	GetID: (self: Inventory, itemName: string, stackable: boolean?) -> string,
-	NewItem: (self: Inventory, itemName: string, amount: number?, loop: boolean?) -> serialized_Item | {[string]: serialized_Item},
-	GetItem: (self: Inventory, itemID: string) -> serialized_Item?,
-	DestroyItem: (self: Inventory, itemID: string) -> (),
+	CheckItem: (self: Inventory, itemName: string) -> {}, --// method returns nothing
+	GetID: (self: Inventory, itemName: string, stackable: boolean) -> string, --// method returns a string
+	NewItem: (self: Inventory, itemName: string, amount: number, loop: boolean?) -> serialized_Item | {[string]: serialized_Item}, --//method returns serialized item (base item of inventory)
+	GetItem: (self: Inventory, itemID: string) -> serialized_Item, --//method also returns serialized item
+	DestroyItem: (self: Inventory, itemID: string) -> (),--//method  returns nothing
+	Cleanup: (self: Inventory) -> (),--//method returns nothing
+	Synchronize: (self: Inventory) -> (),--//method returns nothing
+	Clear: (self: Inventory) -> (),
+	HandleUse: (self: Inventory, item: serialized_Item, defData: {[string]: any}, args: {[string]: any}) -> (),
+	HandleAddHotbar: (self: Inventory, item: serialized_Item) -> (),
+	SetupConnections: (self: Inventory) -> {[string]: RBXScriptConnection}, --//method returns a connections table
+	CleanupConnections: (self: Inventory) -> (),
 } --// type for inventory
 
 export type serialized_Item = {
@@ -56,19 +63,19 @@ export type serialized_Item = {
 	Name: string,
 	Amount: number,
 	Type: string,
+	Stackable: boolean,
+	Tool: {[string]: any}, --// its a table containing a tool and properties (custom tool system)
+	Tool_Event: RBXScriptConnection,
 	Events: "pointer", --// basically points to the events
 	ID: string,
+
+	Increment: (self: serialized_Item, amount: number) -> number, --//method returns a number
+	Decrement: (self: serialized_Item, amount: number) -> number, --//method returns a numbwer
+	GetDefaultData: (self: serialized_Item) -> {[string]: any}, --// method returns a table containing the item main config
+	Destroy: (self: serialized_Item) -> (),
+	SetupToolConnection: (self: serialized_Item) -> (),
+	CleanupToolConnections: (self: serialized_Item) -> (),
 } --// type for items
-
-function Inventory_Handler.BulkDestroy(tab: {}) --// destroys all values of a table (inventory)
-	if typeof(tab) ~= "table" then return end --// if not then return
-
-	for _, val in tab do
-		if typeof(val) == "table" then --// only if its a table
-			val:Destroy() --// destroys item
-		end
-	end
-end
 
 function Inventory_Handler.OnPlayerAdded(plr: Player) --// once plr is added, run this (automatically run by the LOADER module, but it is the same as doing game.players.onplayeradded())
 
